@@ -480,17 +480,11 @@ int child_fn(void *arg)
     }
 
     // Mount /proc
+    // Mount /proc
     mkdir("/proc", 0555);
     if (mount("proc", "/proc", "proc", 0, NULL) < 0)
         perror("mount /proc");
 
-    // 🔥 CRITICAL FIX: verify busybox exists
-    if (access("/bin/busybox", X_OK) != 0) {
-        perror("busybox not accessible");
-        return 127;
-    }
-
-    // 🔥 FINAL EXEC FIX
     execl("/bin/sh", "sh", "-c", cfg->command, (char *)NULL);
 
     perror("exec failed");
