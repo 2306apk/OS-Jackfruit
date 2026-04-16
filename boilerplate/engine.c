@@ -447,6 +447,7 @@ int child_fn(void *arg)
 {
     child_config_t *cfg = arg;
 
+    // Redirect stdout + stderr
     if (dup2(cfg->log_write_fd, STDOUT_FILENO) < 0 ||
         dup2(cfg->log_write_fd, STDERR_FILENO) < 0) {
         perror("dup2");
@@ -454,31 +455,45 @@ int child_fn(void *arg)
     }
     close(cfg->log_write_fd);
 
+    // Set nice value
     if (cfg->nice_value != 0 && setpriority(PRIO_PROCESS, 0, cfg->nice_value) < 0)
         perror("setpriority");
 
+    // Set hostname
     if (sethostname(cfg->id, strlen(cfg->id)) < 0)
         perror("sethostname");
 
+    // Enter rootfs
     if (chdir(cfg->rootfs) < 0) {
         perror("chdir rootfs");
         return 1;
     }
+
     if (chroot(".") < 0) {
         perror("chroot");
         return 1;
     }
+
     if (chdir("/") < 0) {
         perror("chdir /");
         return 1;
     }
 
+    // Mount /proc
     mkdir("/proc", 0555);
     if (mount("proc", "/proc", "proc", 0, NULL) < 0)
         perror("mount /proc");
 
-    execl("/bin/sh", "sh", "-c", cfg->command, (char *)NULL);
-    perror("exec /bin/sh");
+    // 🔥 CRITICAL FIX: verify busybox exists
+    if (access("/bin/busybox", X_OK) != 0) {
+        perror("busybox not accessible");
+        return 127;
+    }
+
+    // 🔥 FINAL EXEC FIX
+    execl("/bin/busybox", "busybox", "sh", "-c", cfg->command, (char *)NULL);
+
+    perror("exec failed");
     return 127;
 }
 
