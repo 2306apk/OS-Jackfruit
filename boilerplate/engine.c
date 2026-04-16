@@ -479,13 +479,13 @@ int child_fn(void *arg)
         return 1;
     }
 
-    // Mount /proc
+    
     // Mount /proc
     mkdir("/proc", 0555);
     if (mount("proc", "/proc", "proc", 0, NULL) < 0)
         perror("mount /proc");
 
-    execl("/bin/sh", "sh", "-c", cfg->command, (char *)NULL);
+    execl("/bin/busybox", "busybox", "sh", "-c", cfg->command, (char *)NULL);
 
     perror("exec failed");
     return 127;
