@@ -49,6 +49,20 @@
 #define DEFAULT_SOFT_LIMIT (40UL << 20)
 #define DEFAULT_HARD_LIMIT (64UL << 20)
 
+
+// ===== FORWARD DECLARATIONS =====
+int child_fn(void *arg);
+
+int register_with_monitor(int monitor_fd,
+                          const char *container_id,
+                          pid_t host_pid,
+                          unsigned long soft_limit_bytes,
+                          unsigned long hard_limit_bytes);
+
+int unregister_from_monitor(int monitor_fd,
+                            const char *container_id,
+                            pid_t host_pid);
+
 // forward declaration
 void handle_signal(int sig);
 
