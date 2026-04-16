@@ -656,6 +656,16 @@ static int cmd_stop(int argc, char *argv[])
 
     return send_control_request(&req);
 }
+static int run_supervisor(const char *base_rootfs)
+{
+    printf("Supervisor started with base rootfs: %s\n", base_rootfs);
+
+    while (1) {
+        pause(); // wait for signals (we’ll replace later)
+    }
+
+    return 0;
+}
 
 int main(int argc, char *argv[])
 {
@@ -686,6 +696,13 @@ int main(int argc, char *argv[])
 
     if (strcmp(argv[1], "stop") == 0)
         return cmd_stop(argc, argv);
+    if (strcmp(argv[1], "supervisor") == 0) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s supervisor <base-rootfs>\n", argv[0]);
+        return 1;
+    }
+    return run_supervisor(argv[2]);
+}
 
     usage(argv[0]);
     return 1;
