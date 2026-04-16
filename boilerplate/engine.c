@@ -34,6 +34,9 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdarg.h>
+#include <sys/resource.h>
+#include <sys/select.h>
 
 #include "monitor_ioctl.h"
 
@@ -400,8 +403,6 @@ int child_fn(void *arg)
 {
     child_config_t *cfg = arg;
 
-    // No logging pipe in minimal version
-
     if (sethostname(cfg->id, strlen(cfg->id)) != 0)
         perror("sethostname");
 
@@ -417,39 +418,10 @@ int child_fn(void *arg)
         perror("chdir");
 
     mkdir("/proc", 0555);
+
     if (mount("proc", "/proc", "proc", 0, NULL) != 0)
         perror("mount");
 
-    execl("/bin/sh", "sh", "-c", cfg->command, NULL);
-
-    perror("exec failed");
-    return 1;
-}
-close(cfg->log_write_fd);
-
-    // Set hostname
-    if (sethostname(cfg->id, strlen(cfg->id)) != 0)
-        perror("sethostname");
-
-    // Apply nice inside container
-    if (cfg->nice_value != 0)
-        nice(cfg->nice_value);
-
-    // Change root
-    if (chroot(cfg->rootfs) != 0) {
-        perror("chroot");
-        return 1;
-    }
-
-    if (chdir("/") != 0)
-        perror("chdir");
-
-    // Mount /proc
-    mkdir("/proc", 0555);
-    if (mount("proc", "/proc", "proc", 0, NULL) != 0)
-        perror("mount");
-
-    // Execute command
     execl("/bin/sh", "sh", "-c", cfg->command, NULL);
 
     perror("exec failed");
