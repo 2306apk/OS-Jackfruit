@@ -437,18 +437,12 @@ static int run_supervisor(const char *rootfs)
     printf("Supervisor started with base rootfs: %s\n", rootfs);
     printf("Listening on FIFO: %s\n", fifo_path);
 
-    char buffer[256];
     // ===== SIGNAL HANDLING =====
-void handle_signal(int sig) {
-    if (sig == SIGINT || sig == SIGTERM) {
-        printf("\nShutting down supervisor...\n");
-        exit(0);
-    }
-}
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    signal(SIGCHLD, SIG_IGN);
 
-signal(SIGINT, handle_signal);
-signal(SIGTERM, handle_signal);
-signal(SIGCHLD, SIG_IGN);
+    char buffer[256];
 
     while (1) {
         memset(buffer, 0, sizeof(buffer));
