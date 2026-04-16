@@ -491,7 +491,7 @@ int child_fn(void *arg)
     }
 
     // 🔥 FINAL EXEC FIX
-    execl("/bin/busybox", "busybox", "sh", "-c", cfg->command, (char *)NULL);
+    execl("/bin/sh", "sh", "-c", cfg->command, (char *)NULL);
 
     perror("exec failed");
     return 127;
