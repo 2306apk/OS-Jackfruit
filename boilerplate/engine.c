@@ -289,9 +289,24 @@ static void bounded_buffer_begin_shutdown(bounded_buffer_t *buffer)
  */
 int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
 {
-    (void)buffer;
-    (void)item;
-    return -1;
+    pthread_mutex_lock(&buffer->mutex);
+
+    while (buffer->count == LOG_BUFFER_CAPACITY && !buffer->shutting_down)
+        pthread_cond_wait(&buffer->not_full, &buffer->mutex);
+
+    if (buffer->shutting_down) {
+        pthread_mutex_unlock(&buffer->mutex);
+        return -1;
+    }
+
+    buffer->items[buffer->tail] = *item;
+    buffer->tail = (buffer->tail + 1) % LOG_BUFFER_CAPACITY;
+    buffer->count++;
+
+    pthread_cond_signal(&buffer->not_empty);
+    pthread_mutex_unlock(&buffer->mutex);
+
+    return 0;
 }
 
 /*
@@ -305,9 +320,24 @@ int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
  */
 int bounded_buffer_pop(bounded_buffer_t *buffer, log_item_t *item)
 {
-    (void)buffer;
-    (void)item;
-    return -1;
+    pthread_mutex_lock(&buffer->mutex);
+
+    while (buffer->count == 0 && !buffer->shutting_down)
+        pthread_cond_wait(&buffer->not_empty, &buffer->mutex);
+
+    if (buffer->count == 0 && buffer->shutting_down) {
+        pthread_mutex_unlock(&buffer->mutex);
+        return -1;
+    }
+
+    *item = buffer->items[buffer->head];
+    buffer->head = (buffer->head + 1) % LOG_BUFFER_CAPACITY;
+    buffer->count--;
+
+    pthread_cond_signal(&buffer->not_full);
+    pthread_mutex_unlock(&buffer->mutex);
+
+    return 0;
 }
 
 /*
@@ -321,10 +351,19 @@ int bounded_buffer_pop(bounded_buffer_t *buffer, log_item_t *item)
  */
 void *logging_thread(void *arg)
 {
-    (void)arg;
+    supervisor_ctx_t *ctx = arg;
+    log_item_t item;
+
+    while (bounded_buffer_pop(&ctx->log_buffer, &item) == 0) {
+        int fd = open(item.container_id, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            write(fd, item.data, item.length);
+            close(fd);
+        }
+    }
+
     return NULL;
 }
-
 /*
  * TODO:
  * Implement the clone child entrypoint.
@@ -338,7 +377,23 @@ void *logging_thread(void *arg)
  */
 int child_fn(void *arg)
 {
-    (void)arg;
+    child_config_t *cfg = arg;
+
+    sethostname(cfg->id, strlen(cfg->id));
+
+    if (chroot(cfg->rootfs) != 0) {
+        perror("chroot");
+        return 1;
+    }
+
+    chdir("/");
+
+    mkdir("/proc", 0555);
+    mount("proc", "/proc", "proc", 0, NULL);
+
+    execl("/bin/sh", "sh", "-c", cfg->command, NULL);
+
+    perror("exec failed");
     return 1;
 }
 
@@ -440,36 +495,18 @@ static int send_control_request(const control_request_t *req)
     printf("Control plane not implemented (minimal mode)\n");
     return 0;
 }
-
+static int cmd_run(int argc, char *argv[]);
 static int cmd_start(int argc, char *argv[])
 {
-    control_request_t req;
-
-    if (argc < 5) {
-        fprintf(stderr,
-                "Usage: %s start <id> <container-rootfs> <command> [--soft-mib N] [--hard-mib N] [--nice N]\n",
-                argv[0]);
-        return 1;
-    }
-
-    memset(&req, 0, sizeof(req));
-    req.kind = CMD_START;
-    strncpy(req.container_id, argv[2], sizeof(req.container_id) - 1);
-    strncpy(req.rootfs, argv[3], sizeof(req.rootfs) - 1);
-    strncpy(req.command, argv[4], sizeof(req.command) - 1);
-    req.soft_limit_bytes = DEFAULT_SOFT_LIMIT;
-    req.hard_limit_bytes = DEFAULT_HARD_LIMIT;
-
-    if (parse_optional_flags(&req, argc, argv, 5) != 0)
-        return 1;
-
-    return send_control_request(&req);
+    return cmd_run(argc, argv);
 }
 
 static int cmd_run(int argc, char *argv[])
 {
     if (argc < 5) {
-        fprintf(stderr, "Usage: %s run <id> <rootfs> <command>\n", argv[0]);
+        fprintf(stderr,
+                "Usage: %s run <id> <rootfs> <command>\n",
+                argv[0]);
         return 1;
     }
 
@@ -477,28 +514,44 @@ static int cmd_run(int argc, char *argv[])
     char *rootfs = argv[3];
     char *cmd = argv[4];
 
-    pid_t pid = fork();
+    child_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
 
-    if (pid == 0) {
-        // CHILD
-        if (chroot(rootfs) != 0) {
-            perror("chroot failed");
-            exit(1);
-        }
+    strncpy(cfg.id, id, sizeof(cfg.id) - 1);
+    strncpy(cfg.rootfs, rootfs, sizeof(cfg.rootfs) - 1);
+    strncpy(cfg.command, cmd, sizeof(cfg.command) - 1);
 
-        chdir("/");
+    static char stack[STACK_SIZE];
 
-        execl("/bin/sh", "sh", "-c", cmd, NULL);
-        perror("exec failed");
-        exit(1);
-    } else if (pid > 0) {
-        printf("Container %s started with PID %d\n", id, pid);
-        waitpid(pid, NULL, 0);
-        printf("Container %s finished\n", id);
-    } else {
-        perror("fork failed");
+    pid_t pid = clone(child_fn,
+                      stack + STACK_SIZE,
+                      CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNS | SIGCHLD,
+                      &cfg);
+
+    if (pid < 0) {
+        perror("clone");
         return 1;
     }
+
+    // ✅ NOW pid + id are valid
+    int fd = open("/dev/container_monitor", O_RDWR);
+    if (fd >= 0) {
+        register_with_monitor(fd, id, pid,
+                              DEFAULT_SOFT_LIMIT,
+                              DEFAULT_HARD_LIMIT);
+    }
+
+    printf("Container %s started with PID %d\n", id, pid);
+
+    waitpid(pid, NULL, 0);
+
+    // Optional cleanup
+    if (fd >= 0) {
+        unregister_from_monitor(fd, id, pid);
+        close(fd);
+    }
+
+    printf("Container %s exited\n", id);
 
     return 0;
 }
