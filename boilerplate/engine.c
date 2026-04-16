@@ -50,7 +50,17 @@
 #define LOG_BUFFER_CAPACITY 16
 #define DEFAULT_SOFT_LIMIT (40UL << 20)
 #define DEFAULT_HARD_LIMIT (64UL << 20)
+#define MAX_CONTAINERS 32
 
+typedef struct {
+    char id[64];
+    pid_t pid;
+    int running;
+    int exit_status;
+} container_t;
+
+static container_t containers[MAX_CONTAINERS];
+static int container_count = 0;
 
 typedef enum {
     CMD_SUPERVISOR = 0,
@@ -131,7 +141,14 @@ typedef struct {
     pthread_mutex_t metadata_lock;
     container_record_t *containers;
 } supervisor_ctx_t;
-
+static container_t* find_container(const char *id) {
+    for (int i = 0; i < container_count; i++) {
+        if (strcmp(containers[i].id, id) == 0) {
+            return &containers[i];
+        }
+    }
+    return NULL;
+}
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -537,70 +554,57 @@ static int cmd_start(int argc, char *argv[])
 static int cmd_run(int argc, char *argv[])
 {
     if (argc < 5) {
-        fprintf(stderr,
-                "Usage: %s run <id> <rootfs> <command>\n",
-                argv[0]);
+        fprintf(stderr, "Usage: %s run <id> <rootfs> <command>\n", argv[0]);
         return 1;
     }
 
-    char *id = argv[2];
-    char *rootfs = argv[3];
-    char *cmd = argv[4];
-
-    control_request_t req;
-    memset(&req, 0, sizeof(req));
-
-    req.soft_limit_bytes = DEFAULT_SOFT_LIMIT;
-    req.hard_limit_bytes = DEFAULT_HARD_LIMIT;
-    req.nice_value = 0;
-
-    // parse optional flags
-    if (argc > 5) {
-        if (parse_optional_flags(&req, argc, argv, 5) != 0)
-            return 1;
-    }
+    const char *id = argv[2];
+    const char *rootfs = argv[3];
+    const char *command = argv[4];
 
     child_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
-    strncpy(cfg.id, id, sizeof(cfg.id) - 1);
-    strncpy(cfg.rootfs, rootfs, sizeof(cfg.rootfs) - 1);
-    strncpy(cfg.command, cmd, sizeof(cfg.command) - 1);
-    cfg.nice_value = req.nice_value;
+    strncpy(cfg.id, id, sizeof(cfg.id));
+    strncpy(cfg.rootfs, rootfs, sizeof(cfg.rootfs));
+    strncpy(cfg.command, command, sizeof(cfg.command));
 
-    static char stack[STACK_SIZE];
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) {
+        perror("malloc");
+        return 1;
+    }
 
-    pid_t pid = clone(child_fn,
-                      stack + STACK_SIZE,
+    pid_t pid = clone(child_fn, stack + STACK_SIZE,
                       CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNS | SIGCHLD,
                       &cfg);
 
     if (pid < 0) {
         perror("clone");
+        free(stack);
         return 1;
-    }
-
-    // monitor integration
-    int fd = open("/dev/container_monitor", O_RDWR);
-    if (fd >= 0) {
-        register_with_monitor(fd, id, pid,
-                              req.soft_limit_bytes,
-                              req.hard_limit_bytes);
-    } else {
-        perror("open monitor");
     }
 
     printf("Container %s started with PID %d\n", id, pid);
 
-    waitpid(pid, NULL, 0);
+    // 🔥 ADD TO METADATA
+    container_t *c = &containers[container_count++];
+    memset(c, 0, sizeof(*c));
+    strncpy(c->id, id, sizeof(c->id));
+    c->pid = pid;
+    c->running = 1;
+    c->exit_status = -1;
 
-    if (fd >= 0) {
-        unregister_from_monitor(fd, id, pid);
-        close(fd);
-    }
+    int status;
+    waitpid(pid, &status, 0);
+
+    // 🔥 UPDATE AFTER EXIT
+    c->running = 0;
+    c->exit_status = status;
 
     printf("Container %s exited\n", id);
 
+    free(stack);
     return 0;
 }
 
