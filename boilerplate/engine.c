@@ -434,12 +434,14 @@ int child_fn(void *arg)
     if (chdir("/") != 0)
         perror("chdir");
 
-    mkdir("/proc", 0555);
+    if (mkdir("/proc", 0555) < 0 && errno != EEXIST)
+        perror("mkdir /proc");
 
     if (mount("proc", "/proc", "proc", 0, NULL) != 0)
-        perror("mount");
+        perror("mount /proc");
 
-    execl("/bin/busybox", "sh", "-c", cfg->command, NULL);
+    // ✅ FIXED EXEC
+    execl("/bin/sh", "sh", "-c", cfg->command, NULL);
 
     perror("exec failed");
     return 1;
@@ -490,45 +492,7 @@ int unregister_from_monitor(int monitor_fd, const char *container_id, pid_t host
  *   - accept control requests and update container state
  *   - reap children and respond to signals
  */
-static int run_supervisor(const char *rootfs)
-{
-    supervisor_ctx_t ctx;
-    int rc;
 
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.server_fd = -1;
-    ctx.monitor_fd = -1;
-
-    rc = pthread_mutex_init(&ctx.metadata_lock, NULL);
-    if (rc != 0) {
-        errno = rc;
-        perror("pthread_mutex_init");
-        return 1;
-    }
-
-    rc = bounded_buffer_init(&ctx.log_buffer);
-    if (rc != 0) {
-        errno = rc;
-        perror("bounded_buffer_init");
-        pthread_mutex_destroy(&ctx.metadata_lock);
-        return 1;
-    }
-
-    /*
-     * TODO:
-     *   1) open /dev/container_monitor
-     *   2) create the control socket / FIFO / shared-memory channel
-     *   3) install SIGCHLD / SIGINT / SIGTERM handling
-     *   4) spawn the logger thread
-     *   5) enter the supervisor event loop
-     */
-    fprintf(stderr, "Supervisor mode not implemented yet for base-rootfs: %s\n", rootfs);
-
-    bounded_buffer_begin_shutdown(&ctx.log_buffer);
-    bounded_buffer_destroy(&ctx.log_buffer);
-    pthread_mutex_destroy(&ctx.metadata_lock);
-    return 1;
-}
 
 /*
  * TODO:
@@ -700,13 +664,7 @@ int main(int argc, char *argv[])
 
     if (strcmp(argv[1], "stop") == 0)
         return cmd_stop(argc, argv);
-    if (strcmp(argv[1], "supervisor") == 0) {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s supervisor <base-rootfs>\n", argv[0]);
-        return 1;
-    }
-    return run_supervisor(argv[2]);
-}
+
 
     usage(argv[0]);
     return 1;
