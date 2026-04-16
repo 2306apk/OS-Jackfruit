@@ -422,7 +422,7 @@ int child_fn(void *arg)
     if (mount("proc", "/proc", "proc", 0, NULL) != 0)
         perror("mount");
 
-    execl("/bin/sh", "sh", "-c", cfg->command, NULL);
+    execl("/bin/busybox", "sh", "-c", cfg->command, NULL);
 
     perror("exec failed");
     return 1;
