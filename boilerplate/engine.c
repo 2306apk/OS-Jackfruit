@@ -420,31 +420,51 @@ int child_fn(void *arg)
 {
     child_config_t *cfg = arg;
 
-    if (sethostname(cfg->id, strlen(cfg->id)) != 0)
-        perror("sethostname");
+    if (dup2(cfg->log_write_fd, STDOUT_FILENO) < 0 ||
+        dup2(cfg->log_write_fd, STDERR_FILENO) < 0) {
+        perror("dup2");
+        return 1;
+    }
+    close(cfg->log_write_fd);
 
     if (cfg->nice_value != 0)
-        nice(cfg->nice_value);
+        setpriority(PRIO_PROCESS, 0, cfg->nice_value);
 
-    if (chroot(cfg->rootfs) != 0) {
+    sethostname(cfg->id, strlen(cfg->id));
+
+    if (chdir(cfg->rootfs) < 0) {
+        perror("chdir rootfs");
+        return 1;
+    }
+
+    if (chroot(".") < 0) {
         perror("chroot");
         return 1;
     }
 
-    if (chdir("/") != 0)
-        perror("chdir");
+    chdir("/");
 
-    if (mkdir("/proc", 0555) < 0 && errno != EEXIST)
-        perror("mkdir /proc");
+    // 🔥 ADD THIS BLOCK (CRITICAL FIX)
 
-    if (mount("proc", "/proc", "proc", 0, NULL) != 0)
-        perror("mount /proc");
+    mkdir("/proc", 0555);
+    mount("proc", "/proc", "proc", 0, NULL);
 
-    // ✅ FIXED EXEC
-    execl("/bin/sh", "sh", "-c", cfg->command, NULL);
+    mkdir("/dev", 0755);
+    mount("tmpfs", "/dev", "tmpfs", 0, "");
+
+    mkdir("/sys", 0555);
+    mount("sysfs", "/sys", "sysfs", 0, "");
+
+    // 🔥 DEBUG CHECK
+    if (access("/bin/sh", X_OK) != 0) {
+        perror("sh not accessible");
+        return 1;
+    }
+
+    execl("/bin/sh", "sh", "-c", cfg->command, (char *)NULL);
 
     perror("exec failed");
-    return 1;
+    return 127;
 }
 
 int register_with_monitor(int monitor_fd,
