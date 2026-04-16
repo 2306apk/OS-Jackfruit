@@ -48,6 +48,7 @@
 #define DEFAULT_SOFT_LIMIT (40UL << 20)
 #define DEFAULT_HARD_LIMIT (64UL << 20)
 
+
 typedef enum {
     CMD_SUPERVISOR = 0,
     CMD_START,
@@ -354,12 +355,32 @@ void *logging_thread(void *arg)
     supervisor_ctx_t *ctx = arg;
     log_item_t item;
 
+    if (mkdir("logs", 0755) < 0 && errno != EEXIST)
+    perror("mkdir logs");
+
     while (bounded_buffer_pop(&ctx->log_buffer, &item) == 0) {
-        int fd = open(item.container_id, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd >= 0) {
-            write(fd, item.data, item.length);
-            close(fd);
+        char path[256];
+        snprintf(path, sizeof(path), "logs/%s.log", item.container_id);
+
+        int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd < 0) {
+            perror("open log file");
+            continue;
         }
+
+        ssize_t written = 0;
+        while (written < item.length) {
+            ssize_t n = write(fd, item.data + written, item.length - written);
+            if (n < 0) {
+                if (errno == EINTR)
+                    continue;
+                perror("write");
+                break;
+            }
+            written += n;
+        }
+
+        close(fd);
     }
 
     return NULL;
@@ -379,18 +400,56 @@ int child_fn(void *arg)
 {
     child_config_t *cfg = arg;
 
-    sethostname(cfg->id, strlen(cfg->id));
+    // No logging pipe in minimal version
+
+    if (sethostname(cfg->id, strlen(cfg->id)) != 0)
+        perror("sethostname");
+
+    if (cfg->nice_value != 0)
+        nice(cfg->nice_value);
 
     if (chroot(cfg->rootfs) != 0) {
         perror("chroot");
         return 1;
     }
 
-    chdir("/");
+    if (chdir("/") != 0)
+        perror("chdir");
 
     mkdir("/proc", 0555);
-    mount("proc", "/proc", "proc", 0, NULL);
+    if (mount("proc", "/proc", "proc", 0, NULL) != 0)
+        perror("mount");
 
+    execl("/bin/sh", "sh", "-c", cfg->command, NULL);
+
+    perror("exec failed");
+    return 1;
+}
+close(cfg->log_write_fd);
+
+    // Set hostname
+    if (sethostname(cfg->id, strlen(cfg->id)) != 0)
+        perror("sethostname");
+
+    // Apply nice inside container
+    if (cfg->nice_value != 0)
+        nice(cfg->nice_value);
+
+    // Change root
+    if (chroot(cfg->rootfs) != 0) {
+        perror("chroot");
+        return 1;
+    }
+
+    if (chdir("/") != 0)
+        perror("chdir");
+
+    // Mount /proc
+    mkdir("/proc", 0555);
+    if (mount("proc", "/proc", "proc", 0, NULL) != 0)
+        perror("mount");
+
+    // Execute command
     execl("/bin/sh", "sh", "-c", cfg->command, NULL);
 
     perror("exec failed");
@@ -492,7 +551,9 @@ static int run_supervisor(const char *rootfs)
  */
 static int send_control_request(const control_request_t *req)
 {
+    (void)req;
     printf("Control plane not implemented (minimal mode)\n");
+    
     return 0;
 }
 static int cmd_run(int argc, char *argv[]);
@@ -514,12 +575,26 @@ static int cmd_run(int argc, char *argv[])
     char *rootfs = argv[3];
     char *cmd = argv[4];
 
+    control_request_t req;
+    memset(&req, 0, sizeof(req));
+
+    req.soft_limit_bytes = DEFAULT_SOFT_LIMIT;
+    req.hard_limit_bytes = DEFAULT_HARD_LIMIT;
+    req.nice_value = 0;
+
+    // parse optional flags
+    if (argc > 5) {
+        if (parse_optional_flags(&req, argc, argv, 5) != 0)
+            return 1;
+    }
+
     child_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
     strncpy(cfg.id, id, sizeof(cfg.id) - 1);
     strncpy(cfg.rootfs, rootfs, sizeof(cfg.rootfs) - 1);
     strncpy(cfg.command, cmd, sizeof(cfg.command) - 1);
+    cfg.nice_value = req.nice_value;
 
     static char stack[STACK_SIZE];
 
@@ -533,19 +608,20 @@ static int cmd_run(int argc, char *argv[])
         return 1;
     }
 
-    // ✅ NOW pid + id are valid
+    // monitor integration
     int fd = open("/dev/container_monitor", O_RDWR);
     if (fd >= 0) {
         register_with_monitor(fd, id, pid,
-                              DEFAULT_SOFT_LIMIT,
-                              DEFAULT_HARD_LIMIT);
+                              req.soft_limit_bytes,
+                              req.hard_limit_bytes);
+    } else {
+        perror("open monitor");
     }
 
     printf("Container %s started with PID %d\n", id, pid);
 
     waitpid(pid, NULL, 0);
 
-    // Optional cleanup
     if (fd >= 0) {
         unregister_from_monitor(fd, id, pid);
         close(fd);
