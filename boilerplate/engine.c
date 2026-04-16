@@ -442,9 +442,10 @@ int child_fn(void *arg)
         return 1;
     }
 
-    chdir("/");
-
-    // 🔥 ADD THIS BLOCK (CRITICAL FIX)
+    if (chdir("/") < 0) {
+        perror("chdir /");
+        return 1;
+    }
 
     mkdir("/proc", 0555);
     mount("proc", "/proc", "proc", 0, NULL);
@@ -455,18 +456,11 @@ int child_fn(void *arg)
     mkdir("/sys", 0555);
     mount("sysfs", "/sys", "sysfs", 0, "");
 
-    // 🔥 DEBUG CHECK
-    if (access("/bin/sh", X_OK) != 0) {
-        perror("sh not accessible");
-        return 1;
-    }
-
     execl("/bin/sh", "sh", "-c", cfg->command, (char *)NULL);
 
     perror("exec failed");
     return 127;
 }
-
 int register_with_monitor(int monitor_fd,
                           const char *container_id,
                           pid_t host_pid,
