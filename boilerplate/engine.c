@@ -48,6 +48,9 @@
 #define DEFAULT_SOFT_LIMIT (40UL << 20)
 #define DEFAULT_HARD_LIMIT (64UL << 20)
 
+// forward declaration
+void handle_signal(int sig);
+
 typedef enum {
     CMD_SUPERVISOR = 0,
     CMD_START,
