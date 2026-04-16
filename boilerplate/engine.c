@@ -419,8 +419,36 @@ static int run_supervisor(const char *rootfs)
      *   4) spawn the logger thread
      *   5) enter the supervisor event loop
      */
-    fprintf(stderr, "Supervisor mode not implemented yet for base-rootfs: %s\n", rootfs);
 
+    // ===== SIMPLE FIFO IPC SETUP =====
+    const char *fifo_path = "/tmp/jackfruit_fifo";
+
+    if (mkfifo(fifo_path, 0666) < 0 && errno != EEXIST) {
+        perror("mkfifo");
+        goto cleanup;
+    }
+
+    int fd = open(fifo_path, O_RDONLY);
+    if (fd < 0) {
+        perror("open fifo");
+        goto cleanup;
+    }
+
+    printf("Supervisor started with base rootfs: %s\n", rootfs);
+    printf("Listening on FIFO: %s\n", fifo_path);
+
+    char buffer[256];
+
+    while (1) {
+        memset(buffer, 0, sizeof(buffer));
+
+        int n = read(fd, buffer, sizeof(buffer) - 1);
+        if (n > 0) {
+            printf("Received request: %s\n", buffer);
+        }
+    }
+
+cleanup:
     bounded_buffer_begin_shutdown(&ctx.log_buffer);
     bounded_buffer_destroy(&ctx.log_buffer);
     pthread_mutex_destroy(&ctx.metadata_lock);
